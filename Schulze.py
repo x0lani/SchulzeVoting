@@ -3,6 +3,7 @@
 #TODO:  make weight part of ballot, maybe not a good idea
 #TODO:  PathStrength class
 
+from pprint import pprint
 import datetime
 
 class Ballot(object):
@@ -31,16 +32,13 @@ class Ballot(object):
             self._candidates.append(secondary)
         return
 
-    def get(self,primary,secondary):
-        return self._tally.get((primary.casefold(),secondary.casefold()),0)
-
     def __str__(self):
         return str(dict(self._tally.items()))
 
     def __add__(self,other):
         if len(set.symmetric_difference(set(self._candidates),
                                         set(other._candidates))) !=0:
-            raise ValueError("Candidates on ballots do not match")
+            raise ValueError("Unable to combine. Candidates on ballots do not match")
         result=Ballot()
         result._candidates=self._candidates.copy()
         preferences=set(list(self._tally.keys()) + list(other._tally.keys()))
@@ -59,20 +57,35 @@ class Ballot(object):
     def __rmul__(self,other):
         return self * other
 
+    def __eq__(self, other):
+        return self._tally.items()==other._tally.items()
+
+    def __ne__(self, other):
+        return not self == other
+
     def candidates(self):
         return self._candidates.copy()
 
-    def delCandidate(self,candidate):
+    def remove(self,candidate):
+        ''' Remove candidate and all associated pairings '''
+        if candidate not in self._candidates:
+            raise KeyError('Candidate not found')
+        self._candidates.remove(candidate)
         matchups=list(self._tally.keys())
         for matchup in matchups:
             if candidate in matchup:
                 del self._tally[matchup]
-        self._candidates.remove(candidate)
         return
 
     def extend(self,candidates,weight=1):
-        ''' Add weak candidate to the candidate list. The weak
-            candidate will lose to all other candidates by weight.'''
+        """
+        Add candidate(s) to the candidate list such that they are all the weakest.
+        Any existing candidates will be ignored.
+        The new candidate(s) will lose to all existing candidates by weight.
+        New candidates will all be tied with each other.
+        """
+        if not hasattr(candidates,'__iter__'):
+            candidates=[candidates]
         candidates=[x.casefold() for x in candidates]
         new=list(set.difference(set(candidates),set(self._candidates)))
         for n in new:
@@ -91,7 +104,7 @@ class Ballot(object):
             print(c+',*',end='\t')
             for col in candidates:
                 if col==c:
-                    print('X\t',end='')
+                    print('--\t',end='')
                 else:
                     print(self.get(c,col),end='\t')
             print()
@@ -118,83 +131,220 @@ class Ballot(object):
             if remove:
                 delList.append(i)
         for i in delList:
-            self.delCandidate(i)
+            self.remove(i)
         return delList
 
-def calcPaths(ballots):
-    if not hasattr(ballots,'__iter__'):
-        ballots=[ballots]
-    total=ballots[0].copy()
-    for ballot in ballots[1:]:
-        total+=ballot
-    candidates=total.candidates()
-    graph=Ballot()
-    print("\tEliminating weak pairwise preferences...")
-    for i in candidates:
-        for j in candidates:
-            if i != j:
-                if total.get(i,j) > total.get(j,i):
-                    graph._set(i,j,total.get(i,j))
-                else:
-                    graph._set(i,j,0)
-    print("\tTotal candidates =",len(graph.candidates()))
-    print("\tCalculating strongest paths...")
-    print("\tCandidates evaluated...")
-    count=0
-    for i in candidates:
-        # user feedback
-        if count%10==0:
-            print('\t\t',count,'\t',str(datetime.datetime.now()),sep='')
+    def get(self,primary, secondary):
+        """ number of voters who prefer primary to secondary """
+        if primary not in self._candidates or secondary not in self._candidates:
+            raise KeyError((primary, secondary))
+        return self._tally.get((primary.casefold(),secondary.casefold()),0)
 
-        # Floyd–Warshall algorithm for strongest path
-        for j in candidates:
-            if i != j:
-                for k in candidates:
-                    if i != k and j != k:
-                        graph._set(j,k,\
-                                        max(graph.get(j,k), \
-                                            min(graph.get(j,i),\
-                                                graph.get(i,k))))
-        count+=1
-    return graph
+class Graph(object):
+    verbose=True
+    """Provide feedback during processing."""
 
-def rank(paths):
-    candidates=paths.candidates()
-    results=[candidates[0]]
-    candidates=candidates[1:]
-    for contender in candidates:
-        j=0
-        while j < len(results):
-            incumbent=results[j]
-            if paths.get(contender,incumbent)>paths.get(incumbent,contender):
-                break
-            # Uncomment following to catch ties
-##            elif paths.get(contender,incumbent)==paths.get(incumbent,contender):
-##                print("current ladder =",results)
-##                raise ValueError('Tie occurred between '+contender+' and '+ incumbent)
-            j+=1
-        results=results[:j]+[contender]+results[j:]
-    return results
+    def __init__(self,ballot,verbose=True):
+        self.verbose=verbose
+        self._ballot=ballot.copy()
+        self._ladder=[]
+        self._candidates=self._ballot._candidates.copy()
+        self._graphCalculated=False
+
+        # Eliminate and rank all obvious losers from the ballot
+        if self.verbose: print("\tDropping obvious weak candidates.")
+        dropped=['TEMP']
+        while len(dropped)>0 and len(self._ballot._candidates)>0:
+            dropped=self._ballot.prune()
+            if len(dropped)>0:
+                # insert pruned objects at top of ladder
+                if len(dropped)==1:
+                    # Singleton. "De-listify" it.
+                    dropped=dropped[0]
+                self._ladder.insert(0,dropped)
+        if self.verbose: print("\t",len(self._ballot._candidates),"candidates remain")
+        if len(self._ballot._candidates)==0:
+            # The ballot has been completely consumed.  Processing finished.
+            self._graphCalculated=True
+            del self._ballot
+        return
+
+    def ladder(self):
+        """
+        Return list of ranked candidates from most to least preferred.
+        Ties are returned as list subsets.
+        """
+        if not self._graphCalculated: self._calcRankings()
+        return self._ladder.copy()
+
+    def candidates(self):
+        return self._candidates.copy()
+
+    def _calcPaths(self):
+        if self._graphCalculated: return
+        # copy latest copy of candidates from ballot, weakest may have already been dropped
+        c=self._ballot._candidates.copy()
+        graph=Ballot()
+        if self.verbose: print("\tNullifying weak pairwise preferences...")
+        for i in c:
+            for j in c:
+                if i != j:
+                    if self._ballot.get(i,j) > self._ballot.get(j,i):
+                        graph._set(i,j,self._ballot.get(i,j))
+                    else:
+                        graph._set(i,j,0)
+        del self._ballot    # original copied ballot no longer required
+
+        if self.verbose: print("\tTotal candidates =",len(graph.candidates()))
+        if self.verbose: print("\tCalculating strongest paths...")
+        if self.verbose: print("\tCandidates evaluated...")
+        count=0
+        for i in c:
+            if self.verbose and count%10==0:
+                print('\t\t',count,'\t',str(datetime.datetime.now()),sep='')
+
+            # Floyd–Warshall algorithm for strongest path
+            for j in c:
+                if i != j:
+                    for k in c:
+                        if i != k and j != k:
+                            graph._set(j,k,\
+                                            max(graph.get(j,k), \
+                                                min(graph.get(j,i),\
+                                                    graph.get(i,k))))
+            count+=1
+        self._graphCalculated=True
+        self._graph=graph
+        return
+
+    def _calcRankings(self):
+        """
+        Determine rankings based on the strongest path matrix.
+        """
+        if not self._graphCalculated: self._calcPaths()
+        candidates=self._graph._candidates.copy()
+
+        while len(candidates)>0:
+            # find and remove weakest candidates. If tied, remove all tied candidates.
+            weakest=[]
+            for c in candidates:
+                remove=True
+                for challenger in candidates:
+                    if c!=challenger:
+                        if self._graph.get(c,challenger)>self._graph.get(challenger,c):
+                            remove=False
+                            break
+                if remove: weakest.append(c)
+            # Sanity check, something must be removed
+            if len(weakest)<1: raise RuntimeError('Unable to find weakest candidate.')
+            # push weakest on top of ladder and remove from graph
+            for c in weakest: self._graph.remove(c)
+            if len(weakest)==1: weakest=weakest[0]
+            self._ladder.insert(0,weakest)
+            candidates=self._graph._candidates.copy()   # refresh list
+        del self._graph
+        return
+
+    def printLadder(self):
+        rank=1
+        for c in self.ladder():
+            print("{0:3n})\t".format(rank),c,sep='')
+            rank+=1
+        return
 
 if __name__=='__main__':
-    test=Ballot('bcd')
-    test.extend('a')
-    print("test is : " ,test)
-    print("test's candidates are : ",test.candidates())
-    test2=Ballot('ab')
-    test2.extend('cd')
-    print("test2 is : " ,test2)
-    print("test2's candidates are : ",test2.candidates())
-    total=test+test2
-    print("total candidates are : ",total.candidates())    
-    total.printMatrix()
+    # assignment test
+    t1=Ballot('abcd')
+    if t1.get('a','c')!=1 or t1.get('d','b')!=0:
+        raise NotImplementedError('__init__ failed')
+    del t1
 
-    test3=5 * Ballot('ACBED') + 5 * Ballot('ADECB') + \
-           8 * Ballot('BEDAC') + 3 * Ballot('CABED') + 7 * Ballot('CAEBD') + \
-           2 * Ballot('CBADE') + 7 * Ballot('DCEBA') + 8 * Ballot('EBADC')
-    print(test3)
-    print('** computing test3 strengths **')
-    p=calcPaths(test3)
-    r=rank(p)
+    # Equality tests
+    t1=Ballot('abcd')
+    t2=Ballot('abcd')
+    if t1 == t2:
+        pass
+    else:
+        raise NotImplementedError('Equality method failed')
+    t3=Ballot('dcba')
+    if t1 == t3:
+        raise NotImplementedError('Equality method failed')
+    if t1 != t3:
+        pass
+    else:
+        raise NotImplementedError('Inequality method failed')
+    del t1,t2,t3
 
+    # duplication test
+    t1=Ballot('abcd')
+    t2=t1.copy()
+    if (t1 is t2) or (t1!=t2):
+        raise NotImplementedError('Copy failed')
+    del t1,t2
 
+    # deletion test
+    t1=Ballot('abcd')
+    t1.remove('c')
+    if t1!=Ballot('abd'):
+        raise NotImplementedError('Remove method failed')
+    del t1
+
+    # addition and multiplication tests
+    t1=Ballot('abcd')
+    t2=Ballot('abcd')
+    if t1*4 != t2+t2+t2+t2:
+        raise NotImplementedError('Addition and/or multiplication methods failed')
+    del t1,t2
+
+    # extend and prune tests
+    t1=Ballot('abcd')
+    t1.extend('XYZ')
+    if set('xyz')!=set(t1.prune()):
+        raise NotImplementedError('Prune and/or extend method failed')
+    del t1
+
+    # Graph creation tests
+    t1= Ballot('abcd')
+    g=Graph(t1)
+    if g._ladder != list('abcd'):
+        raise NotImplementedError('Simple graph creation failed')
+
+    t2= Ballot('ab')
+    t2.extend('cd')
+    t2.extend('e')
+    t2.extend('fg')
+    g2 = Graph(t2)
+    if g2._ladder[:2] != ['a','b'] or set(g2._ladder[2])!=set(['c','d']):
+        raise NotImplementedError('Tied graph creation failed')
+    print("tied ladder t2:")
+    g2.printLadder()
+    del t1,g,t2,g2
+
+    # Ranking tests
+    t=Ballot('abcd')
+    g=Graph(t)
+    if g.ladder()!=['a','b','c','d']:
+        raise NotImplementedError('Simple graph ranking failed')
+    del t,g
+
+    # Path tests
+    test=5 * Ballot('ACBED') + 5 * Ballot('ADECB') + \
+       8 * Ballot('BEDAC') + 3 * Ballot('CABED') + 7 * Ballot('CAEBD') + \
+       2 * Ballot('CBADE') + 7 * Ballot('DCEBA') + 8 * Ballot('EBADC')
+    graph=Graph(test)
+    r=graph.ladder()
+    if r != ['e', 'a', 'c', 'b', 'd']:
+        raise NotImplementedError('ranking algorithm failed')
+    del test,graph,r
+
+    # path with tie
+    A=Ballot('abcd')
+    B=Ballot('dabc')
+    C=Ballot('cdab')
+    T=A+B+C
+    g=Graph(T)
+    if g.ladder()[0]!='a' and set(g.ladder()[1])!=set('bcd'): raise NotImplementedError('ranking algorithm with tie failed')
+    del A,B,C,T,g
+    
+    
+    
