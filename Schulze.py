@@ -1,13 +1,13 @@
 #TODO:  allow voting for ties
-#TODO:  show and tabulate ties
-#TODO:  make weight part of ballot, maybe not a good idea
-#TODO:  PathStrength class
+#TODO:  multithreading for large candidate sets
+#TODO:  weight and change weight
 
 from pprint import pprint
 import datetime
 
 class Ballot(object):
-    def __init__(self,orderedCandidates=None):
+    def __init__(self,orderedCandidates=None,ID=None):
+        self.ID=ID      # Tag to identify ballot. Unused internally. Could be used for serial number.
         self._tally={}
         if orderedCandidates is None:
             # Empty ballot.
@@ -195,15 +195,24 @@ class Graph(object):
                         graph._set(i,j,0)
         del self._ballot    # original copied ballot no longer required
 
-        if self.verbose: print("\tTotal candidates =",len(graph.candidates()))
-        if self.verbose: print("\tCalculating strongest paths...")
-        if self.verbose: print("\tCandidates evaluated...")
         count=0
+        now=datetime.datetime.now()
+        lastT=now
+        numC=len(c)
+        if self.verbose:
+            print("\tCalculating strongest paths...")
+            print("\tCandidates evaluated...")
+            print('\t\t',count,'\t',now.strftime("%Y-%m-%d %H:%M:%S"),sep='')
         for i in c:
-            if self.verbose and count%10==0:
-                print('\t\t',count,'\t',str(datetime.datetime.now()),sep='')
+            if self.verbose and count and count%10==0:
+                print('\t\t',count,'\t',now.strftime("%Y-%m-%d %H:%M:%S"),sep='',end='')
+                now=datetime.datetime.now()
+                estCompletion=(now-lastT)*(numC-count)/10+now
+                print('\t','est finish: ',estCompletion.strftime("%Y-%m-%d %H:%M"),sep='')
+                lastT=now
+            count+=1
 
-            # Floyd–Warshall algorithm for strongest path
+            # Using Floyd–Warshall algorithm for strongest path
             for j in c:
                 if i != j:
                     for k in c:
@@ -212,7 +221,6 @@ class Graph(object):
                                             max(graph.get(j,k), \
                                                 min(graph.get(j,i),\
                                                     graph.get(i,k))))
-            count+=1
         self._graphCalculated=True
         self._graph=graph
         return
@@ -235,7 +243,7 @@ class Graph(object):
                             remove=False
                             break
                 if remove: weakest.append(c)
-            # Sanity check, something must be removed
+            # Sanity check, something must be removed with each iteration
             if len(weakest)<1: raise RuntimeError('Unable to find weakest candidate.')
             # push weakest on top of ladder and remove from graph
             for c in weakest: self._graph.remove(c)
@@ -253,6 +261,8 @@ class Graph(object):
         return
 
 if __name__=='__main__':
+    # test cases
+
     # assignment test
     t1=Ballot('abcd')
     if t1.get('a','c')!=1 or t1.get('d','b')!=0:
@@ -305,7 +315,7 @@ if __name__=='__main__':
 
     # Graph creation tests
     t1= Ballot('abcd')
-    g=Graph(t1)
+    g=Graph(t1,False)
     if g._ladder != list('abcd'):
         raise NotImplementedError('Simple graph creation failed')
 
@@ -313,7 +323,7 @@ if __name__=='__main__':
     t2.extend('cd')
     t2.extend('e')
     t2.extend('fg')
-    g2 = Graph(t2)
+    g2 = Graph(t2,False)
     if g2._ladder[:2] != ['a','b'] or set(g2._ladder[2])!=set(['c','d']):
         raise NotImplementedError('Tied graph creation failed')
     print("tied ladder t2:")
@@ -322,7 +332,7 @@ if __name__=='__main__':
 
     # Ranking tests
     t=Ballot('abcd')
-    g=Graph(t)
+    g=Graph(t,False)
     if g.ladder()!=['a','b','c','d']:
         raise NotImplementedError('Simple graph ranking failed')
     del t,g
@@ -331,7 +341,7 @@ if __name__=='__main__':
     test=5 * Ballot('ACBED') + 5 * Ballot('ADECB') + \
        8 * Ballot('BEDAC') + 3 * Ballot('CABED') + 7 * Ballot('CAEBD') + \
        2 * Ballot('CBADE') + 7 * Ballot('DCEBA') + 8 * Ballot('EBADC')
-    graph=Graph(test)
+    graph=Graph(test,False)
     r=graph.ladder()
     if r != ['e', 'a', 'c', 'b', 'd']:
         raise NotImplementedError('ranking algorithm failed')
@@ -342,9 +352,27 @@ if __name__=='__main__':
     B=Ballot('dabc')
     C=Ballot('cdab')
     T=A+B+C
-    g=Graph(T)
+    g=Graph(T,False)
     if g.ladder()[0]!='a' and set(g.ladder()[1])!=set('bcd'): raise NotImplementedError('ranking algorithm with tie failed')
     del A,B,C,T,g
-    
-    
-    
+
+    # Fantasy United States presidential election, 2000
+    print('\n== United States presidential election, 2000 ==')
+    republican=['Bush','Buchanan','Browne','Gore','Nader']
+    democrat=['Gore','Nader','Browne','Bush','Buchanan']
+    green=['Nader','Browne','Gore','Bush','Buchanan']
+    reform=['Buchanan','Bush','Gore','Browne','Nader']
+    libertarian=['Browne','Nader','Gore','Bush','Buchanan']
+
+    repBallot=Ballot(republican)*50456002
+    demBallot=Ballot(democrat)*50999897
+    greenBallot=Ballot(green)*2882955
+    reformBallot=Ballot(reform)*448895
+    libBallot=Ballot(libertarian)*384431
+
+    total=repBallot+demBallot+greenBallot+reformBallot+libBallot
+    total.printMatrix()
+
+    g=Graph(total)
+    g.printLadder()
+
