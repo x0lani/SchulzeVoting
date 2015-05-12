@@ -13,9 +13,9 @@ class Ballot(object):
             # Empty ballot.
             self._candidates=[]
             return
-        if len(orderedCandidates) != len(set(orderedCandidates)):
-            raise ValueError("Duplicate candidates on ballot")
         self._candidates=list(map((lambda x: x.casefold()),orderedCandidates))
+        if len(self._candidates) != len(set(self._candidates)):
+            raise ValueError("Duplicate candidates on ballot")
         for i in range(len(self._candidates)-1):
             for j in range(i+1, len(self._candidates)):
                 self._set(self._candidates[i],self._candidates[j],1)
@@ -64,10 +64,11 @@ class Ballot(object):
         return not self == other
 
     def candidates(self):
+        """Return copy of candidate list"""
         return self._candidates.copy()
 
     def remove(self,candidate):
-        ''' Remove candidate and all associated pairings '''
+        """Remove candidate from ballot and all associated pairings """
         if candidate not in self._candidates:
             raise KeyError('Candidate not found')
         self._candidates.remove(candidate)
@@ -78,12 +79,15 @@ class Ballot(object):
         return
 
     def extend(self,candidates,weight=1):
-        """
-        Add candidate(s) to the candidate list such that they are all the weakest.
-        Any existing candidates will be ignored.
-        The new candidate(s) will lose to all existing candidates by weight.
-        New candidates will all be tied with each other.
-        """
+        """Add candidate(s) to the candidate list such that they are all tied for last.
+
+Keyword arguments:
+candidates -- list of candidates to be added to the ballot.
+weight -- number of votes to be granted to all existing candidates over the new candidates.
+
+Any candidates that already exist on the ballot are ignored.
+New candidates will all be tied with each other and tied for last place.
+"""
         if not hasattr(candidates,'__iter__'):
             candidates=[candidates]
         candidates=[x.casefold() for x in candidates]
@@ -93,9 +97,9 @@ class Ballot(object):
                 self._tally[(c,n)]=weight
         self._candidates.extend(new)
 
-    def printMatrix(self):
+    def printReport(self):
         candidates=sorted(self.candidates())
-        if len(candidates)==0:
+        if not len(candidates):
             return
         n = len(candidates)
         print('\t*,',end='')
@@ -117,8 +121,9 @@ class Ballot(object):
         returnBallot._tally=self._tally.copy()
         return returnBallot
 
-    def prune(self):
-        '''Drop candidates which beat no other candidates and return deleted candidates'''
+    def popLosers(self):
+        """Pop obvious losers off the ballot and return a list of deleted candidates"""
+
         candidates=self.candidates()
         delList=[]
         for i in candidates:
@@ -134,55 +139,98 @@ class Ballot(object):
             self.remove(i)
         return delList
 
+    def popWinner(self):
+        """Pop obvious winner off ballot
+
+Pop and return candidate which beats all other candidates off ballot.
+If no obvious winner found, return None
+"""
+        candidates=self.candidates()
+        delList=[]
+        for i in candidates:
+            remove = True
+            for j in candidates:
+                if i!=j:
+                    if self.get(i,j) <= self.get(j,i):
+                        remove = False  # This candidate is beaten by or ties at least one other candidate
+                        break
+            if remove:
+                delList.append(i)
+        if len(delList)>1:
+            # More than one obvious winner has been produced. This shouldn't happen
+            raise RuntimeError("More than one winner found")
+        elif len(delList)==1:
+            self.remove(delList[0])
+            return delList[0]
+        elif len(delList)==0:
+            return None
+
     def get(self,primary, secondary):
-        """ number of voters who prefer primary to secondary """
+        """return number of votes for primary over secondary """
         if primary not in self._candidates or secondary not in self._candidates:
             raise KeyError((primary, secondary))
         return self._tally.get((primary.casefold(),secondary.casefold()),0)
 
 class Graph(object):
-    verbose=True
-    """Provide feedback during processing."""
+    verbose=True ##    """Provide feedback during processing."""
 
     def __init__(self,ballot,verbose=True):
         self.verbose=verbose
         self._ballot=ballot.copy()
         self._ladder=[]
-        self._candidates=self._ballot._candidates.copy()
+        self._ladderTop=[]
+        self._candidates=tuple(sorted(self._ballot._candidates))
         self._graphCalculated=False
 
         # Eliminate and rank all obvious losers from the ballot
-        if self.verbose: print("\tDropping obvious weak candidates.")
+        if self.verbose:
+            print("\t",len(self._candidates)," candidates.", sep='')
+            print("\tDropping obvious weak candidates.")
         dropped=['TEMP']
-        while len(dropped)>0 and len(self._ballot._candidates)>0:
-            dropped=self._ballot.prune()
-            if len(dropped)>0:
+        while dropped and self._ballot._candidates:
+            dropped=self._ballot.popLosers()
+            if dropped:
                 # insert pruned objects at top of ladder
                 if len(dropped)==1:
                     # Singleton. "De-listify" it.
                     dropped=dropped[0]
+                else:
+                    dropped=tuple(dropped)
                 self._ladder.insert(0,dropped)
         if self.verbose: print("\t",len(self._ballot._candidates),"candidates remain")
-        if len(self._ballot._candidates)==0:
+        if not self._ballot._candidates:
             # The ballot has been completely consumed.  Processing finished.
             self._graphCalculated=True
             del self._ballot
+            return
+
+        # Remove obvious winners from the ballot
+        if self.verbose: print("\tRemoving obvious winners...")
+        while True:
+            winner=self._ballot.popWinner()
+            if winner:
+                if self.verbose: print("\t\t",winner)
+                self._ladderTop.append(winner)
+            else:
+                break   # No more winners found
+        if self.verbose: print("\t",len(self._ballot._candidates),"candidates remain")
         return
 
     def ladder(self):
-        """
-        Return list of ranked candidates from most to least preferred.
-        Ties are returned as list subsets.
-        """
+        """Return list of ranked candidates
+
+Return list from most to least preferred.
+Ties are returned as lists within the ladder.
+"""
         if not self._graphCalculated: self._calcRankings()
-        return self._ladder.copy()
+        return tuple(self._ladderTop + self._ladder)
 
     def candidates(self):
-        return self._candidates.copy()
+        return self._candidates
 
     def _calcPaths(self):
         if self._graphCalculated: return
-        # copy latest copy of candidates from ballot, weakest may have already been dropped
+        # copy latest copy of candidates from ballot, weakest and strongest may have already been dropped
         c=self._ballot._candidates.copy()
         graph=Ballot()
         if self.verbose: print("\tNullifying weak pairwise preferences...")
@@ -260,8 +308,8 @@ class Graph(object):
             rank+=1
         return
 
-if __name__=='__main__':
-    # test cases
+# unit test cases
+if __name__=='__main__':    
 
     # assignment test
     t1=Ballot('abcd')
@@ -306,11 +354,11 @@ if __name__=='__main__':
         raise NotImplementedError('Addition and/or multiplication methods failed')
     del t1,t2
 
-    # extend and prune tests
+    # extend and popLosers tests
     t1=Ballot('abcd')
     t1.extend('XYZ')
-    if set('xyz')!=set(t1.prune()):
-        raise NotImplementedError('Prune and/or extend method failed')
+    if set('xyz')!=set(t1.popLosers()):
+        raise NotImplementedError('popLosers and/or extend method failed')
     del t1
 
     # Graph creation tests
@@ -326,14 +374,12 @@ if __name__=='__main__':
     g2 = Graph(t2,False)
     if g2._ladder[:2] != ['a','b'] or set(g2._ladder[2])!=set(['c','d']):
         raise NotImplementedError('Tied graph creation failed')
-    print("tied ladder t2:")
-    g2.printLadder()
     del t1,g,t2,g2
 
     # Ranking tests
     t=Ballot('abcd')
     g=Graph(t,False)
-    if g.ladder()!=['a','b','c','d']:
+    if g.ladder()!=('a','b','c','d'):
         raise NotImplementedError('Simple graph ranking failed')
     del t,g
 
@@ -343,7 +389,7 @@ if __name__=='__main__':
        2 * Ballot('CBADE') + 7 * Ballot('DCEBA') + 8 * Ballot('EBADC')
     graph=Graph(test,False)
     r=graph.ladder()
-    if r != ['e', 'a', 'c', 'b', 'd']:
+    if r != ('e', 'a', 'c', 'b', 'd'):
         raise NotImplementedError('ranking algorithm failed')
     del test,graph,r
 
@@ -356,7 +402,45 @@ if __name__=='__main__':
     if g.ladder()[0]!='a' and set(g.ladder()[1])!=set('bcd'): raise NotImplementedError('ranking algorithm with tie failed')
     del A,B,C,T,g
 
-    # Fantasy United States presidential election, 2000
+    # popWinner test
+    A=Ballot('abcd')
+    T=[A.popWinner()]
+    T.append(A.popWinner())
+    T.append(A.popWinner())
+    T.append(A.popWinner())
+    if T!=['a', 'b', 'c', 'd']: raise NotImplementedError('popWinner failed')
+    del T,A
+
+    # popWinner test 2
+    A=Ballot('ABCD')*10
+    B=Ballot('Acdb')*9
+    C=Ballot('Adbc')*8
+    T=A+B+C
+    r=[]
+    r.append(T.popWinner())
+    r.append(T.popWinner())
+    if r!=['a', None]: raise NotImplementedError('popWinner failed')
+    del T,A,r
+
+    # 3-way Condorcet tie with obvious winners and losers
+    A=Ballot('azBCDe')*10
+    B=Ballot('azcdbe')*9
+    C=Ballot('azdbce')*8
+    T=A+B+C
+    g=Graph(T,False)
+    if g.ladder()!=('a', 'z', 'b', 'c', 'd', 'e'): raise NotImplementedError('condorcet tie failed')
+    del A,B,C,T,g
+
+    # 3-way Condorcet tie with no obvious winner or losers
+    A=Ballot('BCD')*10
+    B=Ballot('cdb')*9
+    C=Ballot('dbc')*8
+    T=A+B+C
+    g=Graph(T,False)
+    if g.ladder()!=('b', 'c', 'd'): raise NotImplementedError('condorcet tie failed')
+    del A,B,C,T,g
+    
+    # Theoretical United States presidential election, 2000
     print('\n== United States presidential election, 2000 ==')
     republican=['Bush','Buchanan','Browne','Gore','Nader']
     democrat=['Gore','Nader','Browne','Bush','Buchanan']
@@ -371,7 +455,7 @@ if __name__=='__main__':
     libBallot=Ballot(libertarian)*384431
 
     total=repBallot+demBallot+greenBallot+reformBallot+libBallot
-    total.printMatrix()
+    total.printReport()
 
     g=Graph(total)
     g.printLadder()
