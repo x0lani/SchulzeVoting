@@ -64,8 +64,8 @@ class Ballot(object):
         return not self == other
 
     def candidates(self):
-        """Return copy of candidate list"""
-        return self._candidates.copy()
+        """Return candidate list"""
+        return tuple(self._candidates)
 
     def remove(self, candidate):
         """Remove candidate from ballot and all associated pairings """
